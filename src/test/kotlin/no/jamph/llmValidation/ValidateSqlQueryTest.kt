@@ -97,4 +97,24 @@ class ValidateSqlQueryTest {
     fun `typo in SELECT returns false`() {
         assertFalse(isSqlQueryValid("SELECCT * FROM users"))
     }
+
+    @Test
+    fun `CREATE TEMP TABLE returns true`() {
+        assertTrue(isSqlQueryValid("CREATE TEMP TABLE t AS SELECT * FROM users"))
+    }
+
+    @Test
+    fun `lowercase drop table returns false`() {
+        assertFalse(isSqlQueryValid("drop table users"))
+    }
+
+    @Test
+    fun `CREATE OR REPLACE TABLE returns false`() {
+        assertFalse(isSqlQueryValid("CREATE OR REPLACE TABLE test AS SELECT * FROM users"))
+    }
+
+    @Test
+    fun `blocked statement with leading whitespace returns false`() {
+        assertFalse(isSqlQueryValid("   DELETE FROM users"))
+    }
 }
