@@ -20,11 +20,6 @@ data class TableSchema(
     val columns: List<TableColumn>
 )
 
-data class SiteIdAndPath(
-    val siteId: String,    // "fb69e1e9-..." → WHERE website_id = '...'
-    val urlPath: String    // "/designsystemet%" → WHERE url_path LIKE '...'
-)
-
 data class QueryTypeResult(
     val queryType: String,  // "linear" | "rankings" | "search" | "journey" | "cards" | "default"
     val siteId: String,

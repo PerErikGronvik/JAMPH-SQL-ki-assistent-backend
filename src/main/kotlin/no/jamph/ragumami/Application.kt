@@ -26,6 +26,8 @@ import kotlinx.coroutines.coroutineScope
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import no.jamph.ragumami.core.llm.OllamaClient
+import no.jamph.ragumami.passthrough.PassthroughService
+import no.jamph.ragumami.passthrough.PassthroughRequest
 import no.jamph.bigquery.BigQueryQueryService
 import no.jamph.bigquery.BigQuerySchemaService
 import no.jamph.ragumami.umami.UmamiRAGService
@@ -180,6 +182,7 @@ fun Application.configureRouting() {
     
     val ragService = UmamiRAGService(ollamaClient, bigQueryService)
     val ragV2Service = if (bigQueryService != null) RagV2SqlService(ollamaClient, bigQueryService) else null
+    val passthroughService = PassthroughService(ollamaBaseUrl, ollamaModel, ollamaClient)
     
     routing {
         get("/") {
@@ -323,6 +326,40 @@ fun Application.configureRouting() {
             }
         }
         
+        post("/api/passthrough/generate") {
+            try {
+                val request = call.receive<PassthroughRequest>()
+
+                if (request.prompt.isBlank()) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        ErrorResponse("Prompt kan ikke v\u00e6re tom")
+                    )
+                    return@post
+                }
+
+                val result = passthroughService.generate(request)
+                call.respond(result)
+            } catch (e: IllegalArgumentException) {
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ErrorResponse(e.message ?: "Ugyldig foresp\u00f8rsel")
+                )
+            } catch (e: IllegalStateException) {
+                log.error("PASSTHROUGH: Ollama error: {}", e.message)
+                call.respond(
+                    HttpStatusCode.BadGateway,
+                    ErrorResponse("Kunne ikke koble til Ollama-tjenesten: ${e.message ?: "ukjent feil"}")
+                )
+            } catch (e: Exception) {
+                log.error("PASSTHROUGH: Unexpected error", e)
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    ErrorResponse(e.message ?: "Ukjent feil")
+                )
+            }
+        }
+
         post("/api/benchmark") {
             try {
                 val request = call.receive<BenchmarkRequest>()
