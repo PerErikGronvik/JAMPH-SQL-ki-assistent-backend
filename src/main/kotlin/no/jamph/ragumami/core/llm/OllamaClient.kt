@@ -69,20 +69,24 @@ class OllamaClient(
         }
     }
 
-    suspend fun generate(prompt: String): String {
+    suspend fun generate(prompt: String): String = generate(prompt, emptyMap())
+
+    suspend fun generate(prompt: String, options: Map<String, Any>): String {
         return try {
             val startTime = System.currentTimeMillis()
-            
+
+            val mergedOptions = mapOf(
+                "temperature" to 0.0,
+                "repeat_penalty" to 1.01
+            ) + options
+
             val response = client.post("$baseUrl/api/generate") {
                 contentType(ContentType.Application.Json)
                 setBody(mapOf(
                     "model" to model,
                     "prompt" to prompt,
                     "stream" to false,
-                    "options" to mapOf(
-                        "temperature" to 0.0,
-                        "repeat_penalty" to 1.01
-                    )
+                    "options" to mergedOptions
                 ))
             }
 

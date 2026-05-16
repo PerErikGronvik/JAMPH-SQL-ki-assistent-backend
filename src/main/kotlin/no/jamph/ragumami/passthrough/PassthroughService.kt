@@ -57,11 +57,15 @@ class PassthroughService(
             append(".\n")
             append("Your job is to answer the user politely on what the data says. ")
             append(request.role)
+            append(" Respond in exactly one concise paragraph.")
         }
 
         logger.info("PASSTHROUGH: model={}, promptLength={}", defaultModel, fullPrompt.length)
 
-        val rawResponse = defaultClient.generate(fullPrompt)
+        val rawResponse = defaultClient.generate(fullPrompt, mapOf(
+            "temperature" to 0.3,
+            "num_predict" to 350
+        ))
         val cleanedResponse = cleanText(rawResponse)
 
         logger.info("PASSTHROUGH: responseLength={}", cleanedResponse.length)
