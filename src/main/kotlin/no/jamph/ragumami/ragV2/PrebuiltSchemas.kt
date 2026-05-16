@@ -27,98 +27,126 @@ object PrebuiltSchemas {
     fun getSimplifiedSql(type: String, schemaProvider: BigQuerySchemaProvider) = resolve(type, schemaProvider).simplifiedSql
     fun getJsonSchema(type: String, schemaProvider: BigQuerySchemaProvider) = resolve(type, schemaProvider).jsonSchema
     
+
+    //you should describe in the schema text that METRIC_SQL must be an aggregate metric.
     private fun linearSchema(schemaProvider: BigQuerySchemaProvider) = SchemaTriple(
         bigQuerySchema = """
+        Current time: 2025-12-30
+        === DATABASE TABLES ===
 
-=== DATABASE TABLES ===
+        Table: `prefix.session`
+        Columns:
+        - session_id (STRING, NULLABLE) - Unique identifier for a visitor session
+        - hostname (STRING, NULLABLE)
+        - browser (STRING, NULLABLE)
+        - os (STRING, NULLABLE)
+        - device (STRING, NULLABLE)
+        - screen (STRING, NULLABLE)
+        - language (STRING, NULLABLE)
+        - country (STRING, NULLABLE)
+        - created_at (TIMESTAMP, NULLABLE)
+        - session_parameters (ARRAY<STRUCT<data_key STRING, string_value STRING, number_value FLOAT64, date_value TIMESTAMP, data_type INT64>>, REQUIRED) - Unnest to access: CROSS JOIN UNNEST(session_parameters) AS p, then use p.data_key, p.string_value, etc.
 
-Table: `prefix.session`
-Columns:
-  - session_id (STRING, NULLABLE) - Unique identifier for a visitor session
-  - hostname (STRING, NULLABLE)
-  - browser (STRING, NULLABLE)
-  - os (STRING, NULLABLE)
-  - device (STRING, NULLABLE)
-  - screen (STRING, NULLABLE)
-  - language (STRING, NULLABLE)
-  - country (STRING, NULLABLE)
-  - created_at (TIMESTAMP, NULLABLE)
-  - session_parameters (ARRAY<STRUCT<data_key STRING, string_value STRING, number_value FLOAT64, date_value TIMESTAMP, data_type INT64>>, REQUIRED) - Unnest to access: CROSS JOIN UNNEST(session_parameters) AS p, then use p.data_key, p.string_value, etc.
+        Table: `prefix.event`
+        Columns:
+        - event_id (STRING, REQUIRED)
+        - session_id (STRING, NULLABLE)
+        - url_path (STRING, NULLABLE)
+        - url_query (STRING, NULLABLE)
+        - referrer_path (STRING, NULLABLE)
+        - referrer_query (STRING, NULLABLE)
+        - referrer_domain (STRING, NULLABLE) - Origin domain of visitor
+        - page_title (STRING, NULLABLE)
+        - event_type (INT64, NULLABLE) - 1: page view, 2: custom event
+        - event_name (STRING, NULLABLE) - Known values: navigere, sok, sidebar-subnav, god-praksis-chip, client-error, last ned, feedback-designsystem, 404, accordion lukket, skjema fullfort, accordion åpnet (only set when event_type = 2)
+        - visit_id (STRING, NULLABLE) - Unique identifier for a specific visit within a session
+        - tag (STRING, NULLABLE)
+        - utm_source (STRING, NULLABLE)
+        - utm_content (STRING, NULLABLE)
+        - utm_campaign (STRING, NULLABLE)
+        - utm_medium (STRING, NULLABLE)
+        - utm_term (STRING, NULLABLE)
+        - hostname (STRING, NULLABLE)
+        - website_name (STRING, NULLABLE)
+        - website_domain (STRING, NULLABLE)
+        - website_share_id (STRING, NULLABLE)
+        - website_team_id (STRING, NULLABLE)
 
-Table: `prefix.event`
-Columns:
-  - event_id (STRING, REQUIRED)
-  - session_id (STRING, NULLABLE)
-  - url_path (STRING, NULLABLE)
-  - url_query (STRING, NULLABLE)
-  - referrer_path (STRING, NULLABLE)
-  - referrer_query (STRING, NULLABLE)
-  - referrer_domain (STRING, NULLABLE) - Origin domain of visitor
-  - page_title (STRING, NULLABLE)
-  - event_type (INT64, NULLABLE) - 1: page view, 2: custom event
-  - event_name (STRING, NULLABLE) - Known values: navigere, sok, sidebar-subnav, god-praksis-chip, client-error, last ned, feedback-designsystem, 404, accordion lukket, skjema fullfort, accordion åpnet (only set when event_type = 2)
-  - visit_id (STRING, NULLABLE) - Unique identifier for a specific visit within a session
-  - tag (STRING, NULLABLE)
-  - utm_source (STRING, NULLABLE)
-  - utm_content (STRING, NULLABLE)
-  - utm_campaign (STRING, NULLABLE)
-  - utm_medium (STRING, NULLABLE)
-  - utm_term (STRING, NULLABLE)
-  - hostname (STRING, NULLABLE)
-  - website_name (STRING, NULLABLE)
-  - website_domain (STRING, NULLABLE)
-  - website_share_id (STRING, NULLABLE)
-  - website_team_id (STRING, NULLABLE)
-
+        Important:
+        - METRIC_SQL must be an aggregate expression that produces a single numeric value for each day. For example, "COUNT(*)" or "SUM(p.number_value)" where p is an unnested parameter. The x-axis will be days since the start date, and the y-axis will be the value of this metric.
+        - WHERE_FILTERS (optional) Specific filters based on the users question, e.g. "AND url_path LIKE '%/blogg/%'" or "AND browser = 'Chrome'". Choose TRUE for no filters.
         """.trimIndent(),
         simplifiedSql = """
         For context only:
         WITH base AS (
         SELECT CAST(x AS FLOAT64) AS x, CAST(y AS FLOAT64) AS y FROM (
             SELECT
-            [SELECT_FILTERS]
             DATE_DIFF(DATE(created_at), DATE('[START_DATE]'), DAY) + 1 AS x,
-            COUNT(*) AS y
-            FROM [TABLE]
-            WHERE website_id = // is handled is handled
+            [METRIC_SQL] AS y
+            FROM `[TABLE]`
+            WHERE website_id = -- is handled is handled
             AND created_at >= TIMESTAMP('[START_DATE]')
             AND created_at < TIMESTAMP_ADD(TIMESTAMP('[END_DATE]'), INTERVAL 1 DAY)
-            [WHERE_FILTERS] // Specific filters based on the users question, e.g. "AND url_path LIKE '%/blogg/%'" or "AND browser = 'Chrome'"
+            AND [WHERE_FILTERS] 
             GROUP BY x
             )
         ),
-        """.trimIndent(),
-        sqlTemplate = """ //website_id is handled
+        """.trimIndent(),//website_id is handled
+        sqlTemplate = """ 
+
+        -- Formål: Avgjøre om det er en statistisk signifikant trend i en valgt metrikk over tid.
+        -- x = dag nummer fra startdato (1, 2, 3, ...), y = aggregert metrikk per dag (f.eks. sidevisninger).
+        -- Modell: y = a + b*x  (OLS - minste kvadraters metode)
+        -- Merk: Dataene er observasjonsdata fra én nettside. Antall datapunkter (n) tilsvarer
+        -- antall dager med aktivitet i perioden - ikke nødvendigvis alle kalenderdager.
+
+        -- Steg 1: Bygg tidsseriedataene - en rad per dag med aktivitet.
+        -- x er dag-indeks (starter på 1), y er den valgte metrikkens daglige verdi.
+        -- Modellen har default på dag fordi å gruppere etter større enheter kan skjule trender.
         WITH base AS (
         SELECT CAST(x AS FLOAT64) AS x, CAST(y AS FLOAT64) AS y FROM (
             SELECT
-            [SELECT_FILTERS]
             DATE_DIFF(DATE(created_at), DATE('[START_DATE]'), DAY) + 1 AS x,
-            COUNT(*) AS y
-            FROM [TABLE]
+            [METRIC_SQL] AS y
+            FROM `[TABLE]`
             WHERE website_id = '[WEBSITE_ID]'
             AND created_at >= TIMESTAMP('[START_DATE]')
             AND created_at < TIMESTAMP_ADD(TIMESTAMP('[END_DATE]'), INTERVAL 1 DAY)
-            [WHERE_FILTERS]
+            AND [WHERE_FILTERS]
             GROUP BY x
             )
         ),
+
+        -- Steg 2: Beregn oppsummeringsstatistikk for OLS.
+        -- n = antall datapunkter, x_bar/y_bar = gjennomsnitt,
+        -- var_x = varians i x (spredning i tid), cov_xy = samvariasjon mellom tid og metrikk.
         stats AS (
         SELECT COUNT(*) AS n, AVG(x) AS x_bar, AVG(y) AS y_bar,
                 VAR_SAMP(x) AS var_x, COVAR_SAMP(x, y) AS cov_xy
         FROM base
         ),
+
+        -- Steg 3: Beregn regresjonskoeffisientene.
+        -- slope (b) = endring i y per dag → positiv betyr vekst, negativ betyr nedgang.
+        -- intercept (a) = estimert y-verdi på dag 0 (startpunktet for regresjonslinjen).
         params AS (
         SELECT n, x_bar, y_bar,
             SAFE_DIVIDE(cov_xy, var_x) AS slope,
             y_bar - SAFE_DIVIDE(cov_xy, var_x) * x_bar AS intercept
         FROM stats
         ),
+
+        -- Steg 4: Beregn residualer avviket mellom faktisk og modellert verdi per dag.
+        -- r = y - ŷ  der ŷ = a + b*x.  Store residualer indikerer dårlig modelltilpasning.
         resid AS (
         SELECT b.x, b.y, p.n, p.x_bar, p.y_bar, p.slope, p.intercept,
             b.y - (p.intercept + p.slope * b.x) AS r
         FROM base b CROSS JOIN params p
         ),
+
+        -- Steg 5: Summer kvadratene som trengs for usikkerhetsberegning.
+        -- sse = sum av kvadrerte residualer (uforklart variasjon).
+        -- sst = total variasjon i y. sxx = total variasjon i x (dager).
         sums AS (
         SELECT MIN(n) AS n, MIN(intercept) AS a, MIN(slope) AS b,
                 MIN(x_bar) AS x_bar, MIN(y_bar) AS y_bar,
@@ -127,6 +155,12 @@ Columns:
             SUM(POW(x - x_bar, 2)) AS sxx
         FROM resid
         ),
+
+        -- Steg 6: Beregn modellkvalitet og standardfeil for koeffisientene.
+        -- r2 (R²): Andel av variasjonen i y som forklares av modellen. 0 = ingen, 1 = perfekt.
+        -- rmse: Gjennomsnittlig avvik (i samme enhet som y) - mål på typisk feil.
+        -- se_b: Standardfeil for stigningstallet - brukes til å vurdere usikkerhet i trenden.
+        -- se_a: Standardfeil for skjæringspunktet.
         m AS (
         SELECT n, a, b,
             1 - SAFE_DIVIDE(sse, sst) AS r2,
@@ -135,6 +169,15 @@ Columns:
             SQRT(SAFE_DIVIDE(sse, n - 2) * (1.0 / n + POW(x_bar, 2) / sxx)) AS se_a
         FROM sums
         ),
+        -- Steg 7: Beregn t-verdier og tilnærmede p-verdier.
+        -- t = estimat / standardfeil → høy |t| betyr at estimatet skiller seg tydelig fra null.
+        -- p-verdi: Sannsynligheten for å observere en like ekstrem t-verdi under nullhypotesen (ingen trend).
+        -- Lav p-verdi (< 0.05) tyder på statistisk signifikant trend, men tolkes med forsiktighet
+        -- gitt at forutsetningene for lineær regresjon (uavhengige, normalfordelte residualer) 
+        -- ikke nødvendigvis er oppfylt for webstatistikk.
+        -- Merk: BigQuery mangler innebygd t-fordeling. P-verdiene approksimeres med en 
+        -- normalfordeling via Abramowitz & Stegun-formelen (1964), noe som er rimelig for n > 30
+        -- men gir noe for lave p-verdier ved små utvalg.
         pv AS (
         SELECT n, a, b, r2, rmse, se_a, se_b,
             SAFE_DIVIDE(a, se_a) AS t_a,
@@ -149,6 +192,12 @@ Columns:
             + 0.9372980 / POW(1 + 0.33267 * ABS(SAFE_DIVIDE(b, se_b)), 3))) AS p_b
         FROM m
         )
+
+        -- Sluttresultat: To rader - en for skjæringspunktet (a) og en for stigningstallet (b).
+        -- estimat: Koeffisientens verdi. std_feil: Usikkerhet i estimatet. 
+        -- t_verdi og p_verdi: Grunnlag for signifikansvurdering.
+        -- r2 og rmse gjentas på begge rader for enkel tilgang - de gjelder hele modellen.
+        -- n = antall dagsobservasjoner som modellen er bygget på.
         SELECT 'Skjæringspunkt (a)' AS term,
         ROUND(a, 4) AS estimat, ROUND(se_a, 4) AS std_feil,
         ROUND(t_a, 3) AS t_verdi, ROUND(p_a, 4) AS p_verdi,
@@ -168,8 +217,8 @@ Columns:
         "TABLE": [TABLE],
         "START_DATE": [START_DATE],
         "END_DATE": [END_DATE],
-        "SELECT_FILTERS": [SELECT_FILTERS],
-        "WHERE_FILTERS": [WHERE_FILTERS]
+        "METRIC_SQL": [METRIC_SQL],
+        "WHERE_FILTERS": [WHERE_FILTERS] 
         }
         """.trimIndent() // website_id, TABLE, prefix are predetermined.
     )
@@ -178,54 +227,67 @@ Columns:
 
     private fun rankingsSchema(schemaProvider: BigQuerySchemaProvider) = SchemaTriple(
         bigQuerySchema = """
+            Current time: 2025-12-30
             Table: `prefix.event`
-              - website_id (STRING, NULLABLE)
-              - url_path (STRING, NULLABLE)      -- the page URL path, e.g. '/artikkel/tilgjengelighet'
-              - page_title (STRING, NULLABLE)    -- human-readable page title
-              - event_type (INT64, NULLABLE)     -- 1 = page view, 2 = custom event
-              - created_at (TIMESTAMP, NULLABLE)
+                - website_id (STRING, NULLABLE)
+                - url_path (STRING, NULLABLE)     
+                - page_title (STRING, NULLABLE)    
+                - event_type (INT64, NULLABLE)     -- 1 = page view, 2 = custom event
+                - event_name (STRING, NULLABLE)    -- Known values: navigere, sok, sidebar-subnav, god-praksis-chip, client-error, last ned, feedback-designsystem, 404, accordion lukket, skjema fullfort, accordion åpnet (only set when event_type = 2)
+                - created_at (TIMESTAMP, NULLABLE)
+                - referrer_path (STRING, NULLABLE)
+                - referrer_query (STRING, NULLABLE)
+                - referrer_domain (STRING, NULLABLE) - Origin domain of visitor
 
             Table: `prefix.session`
               - website_id (STRING, NULLABLE)
-              - browser (STRING, NULLABLE)       -- e.g. 'Chrome', 'Firefox'
+              - browser (STRING, NULLABLE)       -- e.g. 'chrome', 'firefox', 'edge-chromium', 'ios', 'safari', 'crios', 'ios-webview', 'opera', 'facebook', 'samsung'
               - os (STRING, NULLABLE)            -- e.g. 'Windows', 'iOS', 'Android'
               - device (STRING, NULLABLE)        -- e.g. 'desktop', 'mobile', 'tablet'
               - screen (STRING, NULLABLE)        -- screen resolution, e.g. '1920x1080'
               - language (STRING, NULLABLE)      -- e.g. 'nb-NO', 'en-US'
               - country (STRING, NULLABLE)       -- e.g. 'NO', 'SE'
               - created_at (TIMESTAMP, NULLABLE)
+
+                Important:
+                - For rankings of pages, use event_type = 1 (page views) and url_path or page_title as the RANK_COLUMN.
+                - For rankings of events, use event_type = 2 and event_name as the RANK_COLUMN.
+                - [SELECT_FILTERS] can be used to specify additional filters, e.g. "AND browser = 'Chrome'" or "AND url_path LIKE '%/blogg/%'". If no additional filters are needed, use TRUE.
+                - [WHERE_FILTERS] can be used to specify additional filters in the WHERE clause, e.g. "AND country = 'NO'" or "AND language = 'nb-NO'". If no additional filters are needed, use TRUE.
+                - If date is not specified today as start date and end date 365 days later. the format is YYYY-MM-DD.
+                - START_DATE must always be earlier than END_DATE.
         """.trimIndent(),
 
         simplifiedSql = """
             SELECT [RANK_COLUMN] AS x, COUNT(*) AS count
-            [SELECT_FILTERS]
-            FROM [TABLE]
+            FROM `[TABLE]`
             WHERE website_id //is handled
-                [WHERE_FILTERS]
                 AND created_at >= '[START_DATE]'
                 AND created_at < '[END_DATE]'
+                AND [WHERE_FILTERS]
             GROUP BY x
             ORDER BY count DESC
             LIMIT [LIMIT]
         """.trimIndent(),
 
         sqlTemplate = """
+            -- Uttrykker mellom SELECT og AS bestemmer hva som rangeres. Eks: url_path
             SELECT [RANK_COLUMN] AS x , COUNT(*) AS count
-            [SELECT_FILTERS]
-            FROM [TABLE]
+            FROM `[TABLE]`
             WHERE website_id = '[WEBSITE_ID]'
-                [WHERE_FILTERS]
+            -- Du kan endre tiden her
                 AND created_at >= TIMESTAMP('[START_DATE]')
                 AND created_at < TIMESTAMP('[END_DATE]')
+                AND [WHERE_FILTERS]
             GROUP BY x
             ORDER BY count DESC
             LIMIT [LIMIT]
         """.trimIndent(),
         jsonSchema = """
             {
-              "TABLE_NAME": [TABLE],
+              "TABLE": [TABLE],
               "RANK_COLUMN": [RANK_COLUMN],
-              "EXTRA_FILTER": [EXTRA_FILTER],
+              "WHERE_FILTERS": [WHERE_FILTERS],
               "START_DATE": [START_DATE],
               "END_DATE": [END_DATE],
               "LIMIT": [LIMIT]
@@ -254,6 +316,7 @@ Columns:
     private fun searchSchema(schemaProvider: BigQuerySchemaProvider) = SchemaTriple(
         // Only the tables and columns needed for this query
         bigQuerySchema = """
+            Current time: 2025-12-30
             Table: `prefix.event`
               - event_id (STRING, REQUIRED)
               - website_id (STRING, NULLABLE)
@@ -272,6 +335,7 @@ Columns:
 
         // The SQL that gets run against BigQuery
         sqlTemplate = """
+            -- Søk er for tiden ute av drift.
             SELECT COUNT(*) AS total_searches
             FROM `prefix.event` e
             JOIN `prefix.event_data` ed ON e.event_id = ed.website_event_id
@@ -313,7 +377,6 @@ Columns:
         
         bigQuerySchema = """
         Current time: 2025-12-30
-        
         Known values of url_path: '/komponenter/core', '/komponenter/ikoner', '/designsystemet', '/grunnleggende/styling/design-tokens', '/god-praksis', '/komponenter/core/button', '/komponenter/core/linkcard', '/komponenter/core/table', '/komponenter/primitives/box', '/komponenter/core/datepicker', '/komponenter/core/typography', '/komponenter/core/accordion', '/grunnleggende/darkside/ny-versjon-av-aksel-darkside', '/komponenter/core/actionmenu', '/komponenter/core/combobox', '/komponenter/core/alert', '/produktbloggen', '/komponenter/core/textfield', '/grunnleggende/darkside/design-tokens', '/komponenter/primitives/hstack', '/komponenter/core/expansioncard', '/komponenter/core/modal', '/komponenter/primitives/page', '/komponenter/core/radio', '/komponenter/core/link', '/komponenter/core/chips', '/komponenter/core/select', '/komponenter/core/checkbox', '/komponenter/core/tag', '/grunnleggende/styling/farger', '/komponenter/core/stepper', '/komponenter/core/eksperimenter', '/komponenter/core/process', '/god-praksis/brukerinnsikt', '/'
         if no time is specified, use the latest year.
         """.trimIndent(),
@@ -341,7 +404,6 @@ Columns:
         )
         """.trimIndent(),
         sqlTemplate = """
-        -- Step 0: Visitors who navigated from / to intro page
 
         -- CONFIGURATION: Change paths here
         WITH config AS (
@@ -494,7 +556,7 @@ Columns:
         ) END AS `10`
         FROM top_10_per_step
         GROUP BY rank
-        ORDER BY rank;
+        ORDER BY rank
 
         """.trimIndent(),
         jsonSchema = """
@@ -505,7 +567,6 @@ Columns:
         """.trimIndent()
     )
     
-    // Kladd cards
     private fun cardsSchema(schemaProvider: BigQuerySchemaProvider) = SchemaTriple(
         bigQuerySchema = """
         ${schemaProvider.getSchemaContext()}  
@@ -518,7 +579,7 @@ Columns:
         simplifiedSql = """
             WITH facts AS (
               SELECT '[FACT1_NAME]' AS category, [SELECT1] AS value
-              FROM [TABLE1]
+              FROM `[TABLE1]`
               WHERE website_id //is handled
                 AND created_at >= '[START_DATE]'
                 AND created_at < '[END_DATE]'
@@ -527,7 +588,7 @@ Columns:
               UNION ALL
 
               SELECT '[FACT2_NAME]' AS category, [SELECT2] AS value
-              FROM [TABLE2]
+              FROM `[TABLE2]`
               WHERE website_id //is handled
                 AND created_at >= '[START_DATE]'
                 AND created_at < '[END_DATE]'
@@ -536,7 +597,7 @@ Columns:
               UNION ALL
 
               SELECT '[FACT3_NAME]' AS category, [SELECT3] AS value
-              FROM [TABLE3]
+              FROM `[TABLE3]`
               WHERE website_id //is handled
                 AND created_at >= '[START_DATE]'
                 AND created_at < '[END_DATE]'
@@ -545,7 +606,7 @@ Columns:
               UNION ALL
 
               SELECT '[FACT4_NAME]' AS category, [SELECT4] AS value
-              FROM [TABLE4]
+              FROM `[TABLE4]`
               WHERE website_id //is handled
                 AND created_at >= '[START_DATE]'
                 AND created_at < '[END_DATE]'
@@ -557,7 +618,7 @@ Columns:
         """.trimIndent(),
 
         sqlTemplate = """
-            -- Fact 1 (always included)
+            -- Fakta 1
             SELECT '[FACT1_NAME]' AS category, [SELECT1] AS value
             FROM `[TABLE1]`
             WHERE website_id = '[WEBSITE_ID]'
@@ -567,7 +628,7 @@ Columns:
 
             UNION ALL
 
-            -- Fact 2 (always included)
+            -- Fakta 2
             SELECT '[FACT2_NAME]' AS category, [SELECT2] AS value
             FROM `[TABLE2]`
             WHERE website_id = '[WEBSITE_ID]'
@@ -577,7 +638,7 @@ Columns:
 
             UNION ALL
 
-            -- Fact 3 (conditional)
+            -- Fakta 3 (valgfri) -- du kan slette denne delen. (SELCECT - UNION ALL)
             SELECT '[FACT3_NAME]' AS category, [SELECT3] AS value
             FROM `[TABLE3]`
             WHERE website_id = '[WEBSITE_ID]'
@@ -588,7 +649,7 @@ Columns:
 
             UNION ALL
 
-            -- Fact 4 (conditional)
+            -- Fakta 4 (valgfri) -- du kan slette denne delen. (SELCECT - UNION ALL)
             SELECT '[FACT4_NAME]' AS category, [SELECT4] AS value
             FROM `[TABLE4]`
             WHERE website_id = '[WEBSITE_ID]'
@@ -597,7 +658,9 @@ Columns:
               AND [WHERE4]
               AND '[FACT4_NAME]' != 'empty'
 
-            ORDER BY category;
+            ORDER BY category
+            
+            -- Fakta x (valgfri) -- du kan kopiere og lime inn flere fakta ved å duplisere en av de eksisterende SELECT - UNION ALL blokkene, og endre navn, SELECT, TABLE og WHERE.
 
         """.trimIndent(),
 

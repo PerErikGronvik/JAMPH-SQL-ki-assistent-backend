@@ -11,7 +11,6 @@ metadata:
 spec:
   image: "{{ image }}"
   port: 8004
-  ttl: 3h
   envFrom:
     - secret: student-bigquery
   filesFrom:
@@ -20,11 +19,7 @@ spec:
   accessPolicy:
     inbound:
       rules:
-        - application: jamph-ollama
-          namespace: team-researchops
         - application: jamph-umami-frontend-dev
-          namespace: team-researchops
-        - application: jamph-ml-trainer
           namespace: team-researchops
         - application: reops-felgen
           namespace: team-researchops
@@ -37,19 +32,29 @@ spec:
         - host: www.googleapis.com
   liveness:
     path: /health
-    initialDelay: 20
+    initialDelay: 30
+    timeout: 5
+    periodSeconds: 15
+    failureThreshold: 5
   readiness:
     path: /health
-    initialDelay: 5
+    initialDelay: 20
+    timeout: 5
+    periodSeconds: 10
+    failureThreshold: 3
   ingresses:
     - "https://jamph-rag-api-umami.ekstern.dev.nav.no"
   resources:
     limits:
-      cpu: "1"
+      cpu: "2"
       memory: 1024Mi
     requests:
-      cpu: "50m"
+      cpu: "100m"
       memory: 256Mi
+  replicas:
+    min: 1
+    max: 4
+    cpuThresholdPercentage: 80
   env:
     - name: ENVIRONMENT
       value: "dev-gcp"

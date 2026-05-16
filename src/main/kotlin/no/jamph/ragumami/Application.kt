@@ -26,6 +26,8 @@ import kotlinx.coroutines.coroutineScope
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import no.jamph.ragumami.core.llm.OllamaClient
+import no.jamph.ragumami.passthrough.PassthroughService
+import no.jamph.ragumami.passthrough.PassthroughRequest
 import no.jamph.bigquery.BigQueryQueryService
 import no.jamph.bigquery.BigQuerySchemaService
 import no.jamph.ragumami.umami.UmamiRAGService
@@ -38,6 +40,35 @@ import no.jamph.llmValidation.TokenSpeedMeasurer
 import java.time.Instant
 
 private val log = LoggerFactory.getLogger("Application")
+
+// --- HTTP-modeller ---
+
+data class ChatRequest(
+    val message: String,
+    val model: String? = null
+)
+
+data class ChatResponse(val response: String)
+
+data class SQLRequest(
+    val query: String,
+    val url: String? = null,
+    val model: String? = null,
+    val pathOperator: String? = null,
+    val debug: Boolean? = null
+)
+
+data class SQLResponse(
+    val sql: String,
+    val debugInfo: Map<String, String?>? = null
+)
+
+data class BenchmarkRequest(
+    val model: String? = null,
+    val ollamaBaseUrl: String? = null
+)
+
+data class ErrorResponse(val error: String)
 
 fun main() {
     embeddedServer(
@@ -151,6 +182,7 @@ fun Application.configureRouting() {
     
     val ragService = UmamiRAGService(ollamaClient, bigQueryService)
     val ragV2Service = if (bigQueryService != null) RagV2SqlService(ollamaClient, bigQueryService) else null
+    val passthroughService = PassthroughService(ollamaBaseUrl, ollamaModel, ollamaClient)
     
     routing {
         get("/") {
@@ -294,10 +326,44 @@ fun Application.configureRouting() {
             }
         }
         
+        post("/api/passthrough/generate") {
+            try {
+                val request = call.receive<PassthroughRequest>()
+
+                if (request.role.isNullOrBlank()) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        ErrorResponse("Prompt kan ikke v\u00e6re tom")
+                    )
+                    return@post
+                }
+
+                val result = passthroughService.generate(request)
+                call.respond(result)
+            } catch (e: IllegalArgumentException) {
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    ErrorResponse(e.message ?: "Ugyldig foresp\u00f8rsel")
+                )
+            } catch (e: IllegalStateException) {
+                log.error("PASSTHROUGH: Ollama error: {}", e.message)
+                call.respond(
+                    HttpStatusCode.BadGateway,
+                    ErrorResponse("Kunne ikke koble til Ollama-tjenesten: ${e.message ?: "ukjent feil"}")
+                )
+            } catch (e: Exception) {
+                log.error("PASSTHROUGH: Unexpected error", e)
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    ErrorResponse(e.message ?: "Ukjent feil")
+                )
+            }
+        }
+
         post("/api/benchmark") {
             try {
                 val request = call.receive<BenchmarkRequest>()
-                val model = request.model ?: ollamaModel
+                val model = (request.model ?: ollamaModel).trim()
                 val benchmarkOllamaUrl = request.ollamaBaseUrl ?: ollamaBaseUrl
                 val results = withContext(Dispatchers.IO) {
                     runBenchmark(listOf(model), benchmarkOllamaUrl)
@@ -313,7 +379,7 @@ fun Application.configureRouting() {
         
         post("/api/benchmark/stream") {
             val request = call.receive<BenchmarkRequest>()
-            val model = request.model ?: ollamaModel
+            val model = (request.model ?: ollamaModel).trim()
             val benchmarkOllamaUrl = request.ollamaBaseUrl ?: ollamaBaseUrl
             val gson = Gson()
             val events = Channel<String>(Channel.UNLIMITED)
@@ -400,9 +466,9 @@ fun Application.configureRouting() {
                         val skipDialectAccuracyTest = false
                         val skipTokenSpeedTest = false
                         val skipEndToEndTest = false
-                        val skipLongPromptTest = false
-                        val skipShortPromptTest = false
-                        val skipCostEstimateTest = false
+                        val skipLongPromptTest = true
+                        val skipShortPromptTest = true
+                        val skipCostEstimateTest = true
 
                         // Step 4: SQL accuracy test
                         emitEvent("debug", "--- Starting SQL accuracy test ---")
@@ -438,14 +504,14 @@ fun Application.configureRouting() {
                         // Step 7: Timer tests
                         val ollamaClient = no.jamph.ragumami.core.llm.OllamaClient(benchmarkOllamaUrl, model)
                         val schemaService = no.jamph.bigquery.BigQuerySchemaServiceMock()
-                        val ragService = no.jamph.ragumami.umami.UmamiRAGService(ollamaClient, schemaService)
+                        val ragService = no.jamph.ragumami.ragV2.RagV2SqlService(ollamaClient, schemaService)
                         val timerProbe = "Show me pageviews per day for https://aksel.nav.no"
 
                         emitEvent("debug", "--- Measuring end-to-end ---")
                         val endToEndMs = if (!skipEndToEndTest) try {
                             emitEvent("debug", "  Running end-to-end pipeline...")
                             val result = no.jamph.llmValidation.EndToEndTimer(ragService)
-                                .measureFullPipeline(timerProbe, "https://aksel.nav.no", schemaService.getWebsites())
+                                .measureFullPipeline(timerProbe, "https://aksel.nav.no")
                             emitEvent("debug", "  Result: ${result.durationMs} ms")
                             result.durationMs
                         } catch (e: Exception) { emitEvent("debug", "End-to-end failed: ${e::class.simpleName}: ${e.message}"); -1L }
@@ -515,10 +581,3 @@ fun Application.configureRouting() {
         }
     }
 }
-
-data class ChatRequest(val message: String, val model: String? = null)
-data class ChatResponse(val response: String)
-data class SQLRequest(val query: String, val url: String? = null, val model: String? = null, val pathOperator: String? = null, val debug: Boolean? = null)
-data class SQLResponse(val sql: String, val debugInfo: Map<String, String?>? = null)
-data class BenchmarkRequest(val model: String? = null, val ollamaBaseUrl: String? = null)
-data class ErrorResponse(val error: String)

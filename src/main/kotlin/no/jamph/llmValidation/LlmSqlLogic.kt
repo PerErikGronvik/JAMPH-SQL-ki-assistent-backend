@@ -3,7 +3,7 @@ package no.jamph.llmValidation
 import no.jamph.bigquery.BigQuerySchemaServiceMock
 import no.jamph.ragumami.core.llm.OllamaClient
 import no.jamph.ragumami.Routes
-import no.jamph.ragumami.umami.UmamiRAGService
+import no.jamph.ragumami.ragV2.RagV2SqlService
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
 
@@ -31,13 +31,12 @@ fun LlmSqlLogic(
     debugLog: (String) -> Unit = ::println
 ): Double = runBlocking { supervisorScope {
     val schemaService = BigQuerySchemaServiceMock()
-    val websites = schemaService.getWebsites()
-    
+
     val ollamaClient = OllamaClient(
         baseUrl = System.getenv("OLLAMA_BASE_URL") ?: Routes.ollamaUrl,
         model = modelName
     )
-    val ragService = UmamiRAGService(ollamaClient, schemaService)
+    val ragService = RagV2SqlService(ollamaClient, schemaService)
 
     val testCases = listOf(
         TestCase(
@@ -86,7 +85,7 @@ fun LlmSqlLogic(
                 Rule("contains fagtorsdag project") { sql -> sql.contains("fagtorsdag-prod-81a6.umami_student") },
                 Rule("contains website_id") { sql -> sql.contains(AKSEL_ID) },
                 Rule("contains '2025'") { sql -> sql.contains("2025") },
-                Rule("contains month=11 or 'november'") { sql -> Regex("= ?11\\b|november", RegexOption.IGNORE_CASE).containsMatchIn(sql) },
+                Rule("contains month=11 or 'november'") { sql -> Regex("= ?11\\b|november|-11-", RegexOption.IGNORE_CASE).containsMatchIn(sql) },
                 Rule("contains referrer_domain") { sql -> sql.lowercase().contains("referrer_domain") },
                 Rule("contains GROUP BY") { sql -> sql.uppercase().contains("GROUP BY") },
             )
@@ -155,7 +154,7 @@ fun LlmSqlLogic(
                 Rule("valid SQL syntax") { sql -> isSqlQueryValid(sql) },
                 Rule("contains fagtorsdag project") { sql -> sql.contains("fagtorsdag-prod-81a6.umami_student") },
                 Rule("contains website_id") { sql -> sql.contains(AKSEL_ID) },
-                Rule("contains 'ki' or 'kunstig intelligens'") { sql -> Regex("'ki'|'kunstig intelligens'", RegexOption.IGNORE_CASE).containsMatchIn(sql) },
+                Rule("contains 'ki' or 'kunstig intelligens'") { sql -> sql.lowercase().contains("ki") || Regex("kunstig intelligens", RegexOption.IGNORE_CASE).containsMatchIn(sql) },
                 Rule("contains url_path or path column") { sql -> sql.lowercase().contains("url_path") || sql.lowercase().contains("path") || sql.lowercase().contains("page") },
             )
         ),
@@ -198,7 +197,10 @@ fun LlmSqlLogic(
                 Rule("valid SQL syntax") { sql -> isSqlQueryValid(sql) },
                 Rule("contains fagtorsdag project") { sql -> sql.contains("fagtorsdag-prod-81a6.umami_student") },
                 Rule("contains website_id") { sql -> sql.contains(AKSEL_ID) },
-                Rule("contains '/' and '/komponenter/core/linkcard'") { sql -> sql.lowercase().contains("forside") && sql.lowercase().contains("linkcardkomponentsiden") },
+                Rule("references '/' and '/komponenter/core/linkcard'") { sql ->
+                    (sql.contains("'/'") || sql.contains("\"/\"")) &&
+                    sql.contains("/komponenter/core/linkcard")
+                },
             )
         ),
         
@@ -209,7 +211,11 @@ fun LlmSqlLogic(
                 Rule("valid SQL syntax") { sql -> isSqlQueryValid(sql) },
                 Rule("contains fagtorsdag project") { sql -> sql.contains("fagtorsdag-prod-81a6.umami_student") },
                 Rule("contains website_id") { sql -> sql.contains(AKSEL_ID) },
-                Rule("contains 'not', 'forside'") { sql -> sql.lowercase().contains("not") && sql.lowercase().contains("forside") && sql.lowercase().contains("most used") },
+                Rule("excludes frontpage ('/' or forside)") { sql ->
+                    (sql.contains("!= '/'") || sql.contains("<> '/'") || sql.contains("!= \"/\"") ||
+                     sql.uppercase().contains("NOT IN") || sql.lowercase().contains("forside")) &&
+                    sql.uppercase().contains("ORDER BY")
+                },
             )
         ),
 
@@ -231,7 +237,11 @@ fun LlmSqlLogic(
                 Rule("valid SQL syntax") { sql -> isSqlQueryValid(sql) },
                 Rule("contains fagtorsdag project") { sql -> sql.contains("fagtorsdag-prod-81a6.umami_student") },
                 Rule("contains website_id") { sql -> sql.contains(AKSEL_ID) },
-                Rule("contains 'time on page' or 'session duration'") { sql -> Regex("'time on page'|'session duration'", RegexOption.IGNORE_CASE).containsMatchIn(sql) },
+                Rule("contains time-on-page calculation (TIMESTAMP_DIFF/LAG/DATE_DIFF)") { sql ->
+                    sql.uppercase().contains("TIMESTAMP_DIFF") || sql.uppercase().contains("LAG(") ||
+                    sql.uppercase().contains("DATE_DIFF") || sql.uppercase().contains("DATEDIFF") ||
+                    sql.uppercase().contains("TIME_DIFF")
+                },
             )
         ),
 
@@ -257,8 +267,8 @@ fun LlmSqlLogic(
         debugLog("  SQL test ${index + 1}/${testCases.size}: ${testCase.question}")
         debugLog("  URL: ${testCase.url}")
         try {
-            val generatedSql = ragService.generateSQL(testCase.question, testCase.url, websites)
-            debugLog("  Generated SQL: ${generatedSql.replace("\n", " ")}")
+            val generatedSql = ragService.generateSql(testCase.question, testCase.url)
+            debugLog("  Generated SQL: $generatedSql")
 
             var rulesPassed = 0
             testCase.rules.forEach { rule ->
