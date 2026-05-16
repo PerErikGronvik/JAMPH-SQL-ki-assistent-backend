@@ -330,7 +330,7 @@ fun Application.configureRouting() {
             try {
                 val request = call.receive<PassthroughRequest>()
 
-                if (request.prompt.isBlank()) {
+                if (request.role.isBlank()) {
                     call.respond(
                         HttpStatusCode.BadRequest,
                         ErrorResponse("Prompt kan ikke v\u00e6re tom")
